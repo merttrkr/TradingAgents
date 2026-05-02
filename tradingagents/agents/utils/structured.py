@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
 
 
+
 def bind_structured(llm: Any, schema: type[T], agent_name: str) -> Optional[Any]:
     """Return ``llm.with_structured_output(schema)`` or ``None`` if unsupported.
 
@@ -69,5 +70,11 @@ def invoke_structured_or_freetext(
                 agent_name, exc,
             )
 
-    response = plain_llm.invoke(prompt)
-    return response.content
+    try:
+        response = plain_llm.invoke(prompt)
+        return response.content
+    except Exception as exc:
+        raise RuntimeError(
+            f"{agent_name}: both structured and free-text invocations failed. "
+            f"Last error: {exc}"
+        ) from exc

@@ -3,7 +3,7 @@ from typing import Any, Optional
 
 from langchain_openai import ChatOpenAI
 
-from .base_client import BaseLLMClient, normalize_content
+from .base_client import BaseLLMClient, invoke_with_retry, normalize_content
 from .validators import validate_model
 
 
@@ -16,7 +16,9 @@ class NormalizedChatOpenAI(ChatOpenAI):
     """
 
     def invoke(self, input, config=None, **kwargs):
-        return normalize_content(super().invoke(input, config, **kwargs))
+        return invoke_with_retry(
+            lambda: normalize_content(ChatOpenAI.invoke(self, input, config, **kwargs))
+        )
 
     def with_structured_output(self, schema, *, method=None, **kwargs):
         """Wrap with structured output, defaulting to function_calling for OpenAI.

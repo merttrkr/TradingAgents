@@ -30,6 +30,7 @@ from cli.models import AnalystType
 from cli.utils import *
 from cli.announcements import fetch_announcements, display_announcements
 from cli.stats_handler import StatsCallbackHandler
+from cli.trace_handler import TraceCallbackHandler
 
 console = Console()
 
@@ -945,8 +946,17 @@ def run_analysis(checkpoint: bool = False):
     config["output_language"] = selections.get("output_language", "English")
     config["checkpoint_enabled"] = checkpoint
 
-    # Create stats callback handler for tracking LLM/tool calls
+    # Create result directory early so trace handler can open its file
+    results_dir = Path(config["results_dir"]) / selections["ticker"] / selections["analysis_date"]
+    results_dir.mkdir(parents=True, exist_ok=True)
+    report_dir = results_dir / "reports"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    log_file = results_dir / "message_tool.log"
+    log_file.touch(exist_ok=True)
+
+    # Create callback handlers
     stats_handler = StatsCallbackHandler()
+    trace_handler = TraceCallbackHandler(results_dir / "trace.jsonl")
 
     # Normalize analyst selection to predefined order (selection is a 'set', order is fixed)
     selected_set = {analyst.value for analyst in selections["analysts"]}
@@ -957,7 +967,7 @@ def run_analysis(checkpoint: bool = False):
         selected_analyst_keys,
         config=config,
         debug=True,
-        callbacks=[stats_handler],
+        callbacks=[stats_handler, trace_handler],
     )
 
     # Initialize message buffer with selected analysts
@@ -965,14 +975,6 @@ def run_analysis(checkpoint: bool = False):
 
     # Track start time for elapsed display
     start_time = time.time()
-
-    # Create result directory
-    results_dir = Path(config["results_dir"]) / selections["ticker"] / selections["analysis_date"]
-    results_dir.mkdir(parents=True, exist_ok=True)
-    report_dir = results_dir / "reports"
-    report_dir.mkdir(parents=True, exist_ok=True)
-    log_file = results_dir / "message_tool.log"
-    log_file.touch(exist_ok=True)
 
     def save_message_decorator(obj, func_name):
         func = getattr(obj, func_name)
@@ -1043,13 +1045,17 @@ def run_analysis(checkpoint: bool = False):
         )
         update_display(layout, spinner_text, stats_handler=stats_handler, start_time=start_time)
 
+        # Resolve any pending memory-log entries before the pipeline runs.
+        graph._resolve_pending_entries(selections["ticker"])
+
         # Initialize state and get graph args with callbacks
+        past_context = graph.memory_log.get_past_context(selections["ticker"])
         init_agent_state = graph.propagator.create_initial_state(
-            selections["ticker"], selections["analysis_date"]
+            selections["ticker"], selections["analysis_date"], past_context=past_context
         )
         # Pass callbacks to graph config for tool execution tracking
         # (LLM tracking is handled separately via LLM constructor)
-        args = graph.propagator.get_graph_args(callbacks=[stats_handler])
+        args = graph.propagator.get_graph_args(callbacks=[stats_handler, trace_handler])
 
         # Stream the analysis
         trace = []
@@ -1156,6 +1162,13 @@ def run_analysis(checkpoint: bool = False):
         final_state = trace[-1]
         decision = graph.process_signal(final_state["final_trade_decision"])
 
+        # Store decision for deferred reflection on the next same-ticker run.
+        graph.memory_log.store_decision(
+            ticker=selections["ticker"],
+            trade_date=selections["analysis_date"],
+            final_trade_decision=final_state["final_trade_decision"],
+        )
+
         # Update all agent statuses to completed
         for agent in message_buffer.agent_status:
             message_buffer.update_agent_status(agent, "completed")
@@ -1170,6 +1183,8 @@ def run_analysis(checkpoint: bool = False):
                 message_buffer.update_report_section(section, final_state[section])
 
         update_display(layout, stats_handler=stats_handler, start_time=start_time)
+
+    trace_handler.close()
 
     # Post-analysis prompts (outside Live context for clean interaction)
     console.print("\n[bold cyan]Analysis Complete![/bold cyan]\n")

@@ -2,7 +2,7 @@ from typing import Any, Optional
 
 from langchain_anthropic import ChatAnthropic
 
-from .base_client import BaseLLMClient, normalize_content
+from .base_client import BaseLLMClient, invoke_with_retry, normalize_content
 from .validators import validate_model
 
 _PASSTHROUGH_KWARGS = (
@@ -20,7 +20,9 @@ class NormalizedChatAnthropic(ChatAnthropic):
     """
 
     def invoke(self, input, config=None, **kwargs):
-        return normalize_content(super().invoke(input, config, **kwargs))
+        return invoke_with_retry(
+            lambda: normalize_content(ChatAnthropic.invoke(self, input, config, **kwargs))
+        )
 
 
 class AnthropicClient(BaseLLMClient):
